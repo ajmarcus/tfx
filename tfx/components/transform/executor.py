@@ -1397,15 +1397,15 @@ class Executor(base_beam_executor.BaseBeamExecutor):
                   | 'Transform[{}]'.format(infix) >>
                   tft_beam.TransformDataset(output_record_batches=True))
 
+            _, metadata = transform_fn
+
+            # TODO(b/70392441): Retain tf.Metadata (e.g., IntDomain) in
+            # schema. Currently input dataset schema only contains dtypes,
+            # and other metadata is dropped due to roundtrip to tensors.
+            transformed_schema_proto = metadata.schema
+
             if not disable_statistics:
               # Aggregated feature stats after transformation.
-              _, metadata = transform_fn
-
-              # TODO(b/70392441): Retain tf.Metadata (e.g., IntDomain) in
-              # schema. Currently input dataset schema only contains dtypes,
-              # and other metadata is dropped due to roundtrip to tensors.
-              transformed_schema_proto = metadata.schema
-
               for dataset in transform_data_list:
                 infix = 'TransformIndex{}'.format(dataset.index)
                 dataset.transformed_and_standardized = (
@@ -1476,11 +1476,13 @@ class Executor(base_beam_executor.BaseBeamExecutor):
                        enable_validation=True))
 
             if materialization_format is not None:
+              encoder = tfx_bsl.coders.example_coder.RecordBatchToExamplesEncoder(
+                  transformed_schema_proto.SerializeToString())
               for dataset in transform_data_list:
                 infix = 'TransformIndex{}'.format(dataset.index)
                 (dataset.transformed
                  | 'EncodeAndSerialize[{}]'.format(infix) >> beam.FlatMap(
-                     Executor._RecordBatchToExamples)
+                     Executor._RecordBatchToExamples, encoder=encoder)
                  | 'Materialize[{}]'.format(infix) >> self._WriteExamples(
                      materialization_format, dataset.materialize_output_path))
 
@@ -1690,7 +1692,8 @@ class Executor(base_beam_executor.BaseBeamExecutor):
 
   @staticmethod
   def _RecordBatchToExamples(
-      data_batch: Tuple[pa.RecordBatch, Dict[str, pa.Array]]
+      data_batch: Tuple[pa.RecordBatch, Dict[str, pa.Array]],
+      encoder: tfx_bsl.coders.example_coder.RecordBatchToExamplesEncoder
   ) -> Generator[Tuple[Any, bytes], None, None]:
     """Maps `pa.RecordBatch` to a generator of serialized `tf.Example`s."""
     record_batch, unary_passthrough_features = data_batch
@@ -1701,8 +1704,7 @@ class Executor(base_beam_executor.BaseBeamExecutor):
       # Filter the record batch to make sure that the internal column doesn't
       # get encoded.
       record_batch = Executor._FilterInternalColumn(record_batch, keys_index)
-      examples = tfx_bsl.coders.example_coder.RecordBatchToExamples(
-          record_batch)
+      examples = encoder.EncodeBatch(record_batch)
       for key, example in zip(keys, examples):
         yield (None if key is None else key[0], example)
     else:
