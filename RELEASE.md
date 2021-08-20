@@ -11,6 +11,7 @@
 ## Deprecations
 
 ## Bug Fixes and Other Changes
+*   Depends on `pyarrow>=1,<6`.
 
 ## Documentation Updates
 
